@@ -78,9 +78,47 @@ struct ReminderPolicyTests {
         let original = event(attendees: [colleague])
         var renamed = original
         renamed.title = "Renamed"
-        #expect(ReminderPolicy.alarmID(for: original) == ReminderPolicy.alarmID(for: event(attendees: [me, colleague])))
-        #expect(ReminderPolicy.alarmID(for: original) != ReminderPolicy.alarmID(for: renamed))
-        #expect(ReminderPolicy.alarmID(for: original) != ReminderPolicy.alarmID(for: event(startingIn: 7200, attendees: [colleague])))
+        #expect(ReminderPolicy.alarmID(for: [original]) == ReminderPolicy.alarmID(for: [event(attendees: [me, colleague])]))
+        #expect(ReminderPolicy.alarmID(for: [original]) != ReminderPolicy.alarmID(for: [renamed]))
+        #expect(ReminderPolicy.alarmID(for: [original]) != ReminderPolicy.alarmID(for: [event(startingIn: 7200, attendees: [colleague])]))
+    }
+
+    @Test func eventsStartingTogetherShareOneReminder() throws {
+        var review = event(id: "a", attendees: [colleague])
+        review.title = "Review"
+        var standup = event(id: "b", attendees: [colleague])
+        standup.title = "Standup"
+        let later = event(id: "c", startingIn: 7200, attendees: [colleague])
+
+        let reminders = ReminderPolicy.reminders(for: [standup, later, review], now: now)
+
+        #expect(reminders.count == 2)
+        let combined = try #require(reminders.first)
+        #expect(combined.title == "Review + 1 more")
+        #expect(combined.eventStart == review.start)
+    }
+
+    @Test func combinedReminderIgnoresEventsThatDoNotQualify() {
+        let solo = event(id: "solo", attendees: [me])
+        let meeting = event(id: "meeting", attendees: [colleague])
+        let reminders = ReminderPolicy.reminders(for: [solo, meeting], now: now)
+        #expect(reminders.map(\.title) == ["Sync"])
+    }
+
+    @Test func combinedAlarmIDDoesNotDependOnCalendarOrder() {
+        let first = event(id: "a", attendees: [colleague])
+        let second = event(id: "b", attendees: [colleague])
+        let forward = ReminderPolicy.reminders(for: [first, second], now: now)
+        let backward = ReminderPolicy.reminders(for: [second, first], now: now)
+        #expect(forward == backward)
+    }
+
+    @Test func addingAnEventToAGroupChangesItsAlarmID() throws {
+        let first = event(id: "a", attendees: [colleague])
+        let second = event(id: "b", attendees: [colleague])
+        let alone = try #require(ReminderPolicy.reminders(for: [first], now: now).first)
+        let together = try #require(ReminderPolicy.reminders(for: [first, second], now: now).first)
+        #expect(alone.id != together.id)
     }
 
     @Test func keepsOnlyTheSoonestWithinTheAlarmLimit() {

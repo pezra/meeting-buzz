@@ -29,10 +29,17 @@ enum ReminderPolicy {
     /// AlarmKit enforces an undocumented limit, so only hold alarms for the soonest events.
     static let maxAlarms = 60
 
-    /// Stable across refreshes. Moving or renaming an event changes it, which replaces the alarm.
-    static func alarmID(for event: CalendarEvent) -> UUID {
-        let key = "\(event.id)|\(event.start.timeIntervalSince1970)|\(event.title)"
+    /// Stable across refreshes. Moving, renaming, adding or removing an event changes it, which replaces the alarm.
+    static func alarmID(for events: [CalendarEvent]) -> UUID {
+        let key = events
+            .map { "\($0.id)|\($0.start.timeIntervalSince1970)|\($0.title)" }
+            .joined(separator: "\n")
         return SHA256.hash(data: Data(key.utf8)).withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+    }
+
+    static func combinedTitle(for events: [CalendarEvent]) -> String {
+        let others = events.count - 1
+        return others > 0 ? "\(events[0].title) + \(others) more" : events[0].title
     }
 
     static func involvesAnotherPerson(_ event: CalendarEvent) -> Bool {
@@ -48,14 +55,14 @@ enum ReminderPolicy {
     }
 
     static func reminders(for events: [CalendarEvent], now: Date) -> [Reminder] {
-        let upcoming = events
-            .filter(shouldRemind)
-            .map { event in
-                Reminder(
-                    id: alarmID(for: event),
-                    title: event.title,
-                    eventStart: event.start,
-                    fireDate: event.start.addingTimeInterval(-leadTime)
+        let upcoming = Dictionary(grouping: events.filter(shouldRemind), by: \.start)
+            .map { start, group in
+                let ordered = group.sorted { ($0.title, $0.id) < ($1.title, $1.id) }
+                return Reminder(
+                    id: alarmID(for: ordered),
+                    title: combinedTitle(for: ordered),
+                    eventStart: start,
+                    fireDate: start.addingTimeInterval(-leadTime)
                 )
             }
             .filter { $0.fireDate > now }
