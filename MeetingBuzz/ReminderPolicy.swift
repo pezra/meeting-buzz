@@ -42,6 +42,7 @@ enum ReminderPolicy {
     static let leadTimeOptions: [TimeInterval] = [30, 60, 120, 300, 600, 900]
     static let lookaheadDays = 14
     static let lookahead = TimeInterval(lookaheadDays) * 24 * 60 * 60
+    static let listHours = 24
     /// AlarmKit enforces an undocumented limit, so only hold alarms for the soonest events.
     static let maxAlarms = 60
 
@@ -92,6 +93,12 @@ enum ReminderPolicy {
             .filter { $0.fireDate > now }
             .sorted { $0.fireDate < $1.fireDate }
         return Array(upcoming.prefix(maxAlarms))
+    }
+
+    /// The reminders to show in the list. Later ones still get alarms.
+    static func listed(_ reminders: [Reminder], now: Date) -> [Reminder] {
+        let end = now.addingTimeInterval(TimeInterval(listHours) * 60 * 60)
+        return reminders.filter { $0.eventStart <= end }
     }
 
     /// What it takes to bring the alarms in line with the calendar. Pass canCancel as false to only add alarms, and

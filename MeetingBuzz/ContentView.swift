@@ -47,7 +47,7 @@ struct ContentView: View {
 
                 Section {
                     if scheduler.reminders.isEmpty {
-                        Text("No events with other people in the next \(ReminderPolicy.lookaheadDays) days.")
+                        Text("No events with other people in the next \(ReminderPolicy.listHours) hours.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(scheduler.reminders) { reminder in

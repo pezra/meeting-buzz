@@ -227,7 +227,7 @@ final class ReminderScheduler {
             errorMessage = error.localizedDescription
             succeeded = false
         }
-        reminders = desired
+        reminders = ReminderPolicy.listed(desired, now: now)
         return succeeded
     }
 

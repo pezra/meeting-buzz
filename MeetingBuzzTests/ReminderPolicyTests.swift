@@ -155,6 +155,18 @@ struct ReminderPolicyTests {
         #expect(reminders == reminders.sorted { $0.fireDate < $1.fireDate })
     }
 
+    @Test func listsOnlyTheNextTwentyFourHours() {
+        let day: TimeInterval = 24 * 60 * 60
+        let soon = event(id: "soon", startingIn: 3600)
+        let atTheLimit = event(id: "limit", startingIn: day)
+        let tooFar = event(id: "far", startingIn: day + 1)
+
+        let reminders = ReminderPolicy.reminders(for: [soon, atTheLimit, tooFar], now: now)
+
+        #expect(reminders.count == 3)
+        #expect(ReminderPolicy.listed(reminders, now: now).map(\.eventStart) == [soon.start, atTheLimit.start])
+    }
+
     @Test func schedulesOnlyAlarmsThatDoNotExistYet() {
         let existing = UUID()
         let new = UUID()
