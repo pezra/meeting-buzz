@@ -24,6 +24,17 @@ struct ContentView: View {
                 }
 
                 Section {
+                    Picker("Buzz before events", selection: Binding(
+                        get: { scheduler.leadTime },
+                        set: { scheduler.setLeadTime($0) }
+                    )) {
+                        ForEach(ReminderPolicy.leadTimeOptions, id: \.self) { option in
+                            Text(ReminderPolicy.describe(leadTime: option)).tag(option)
+                        }
+                    }
+                }
+
+                Section {
                     Button("Test buzz in 10 seconds") {
                         testScheduled = true
                         Task { await scheduler.scheduleTestBuzz() }

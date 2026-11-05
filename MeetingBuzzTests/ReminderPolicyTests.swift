@@ -28,7 +28,7 @@ struct ReminderPolicyTests {
     }
 
     private func reminder(_ id: UUID) -> Reminder {
-        Reminder(id: id, title: "Sync", eventStart: now)
+        Reminder(id: id, title: "Sync", eventStart: now, leadTime: 30)
     }
 
     @Test func remindsWhenAnotherPersonAttends() {
@@ -65,6 +65,27 @@ struct ReminderPolicyTests {
         let reminder = try #require(ReminderPolicy.reminders(for: [event()], now: now).first)
         #expect(reminder.eventStart.timeIntervalSince(reminder.fireDate) == 30)
         #expect(reminder.alertTitle == "Sync starts in 30 seconds")
+    }
+
+    @Test func firesAtTheConfiguredLeadTime() throws {
+        let reminder = try #require(ReminderPolicy.reminders(for: [event()], now: now, leadTime: 300).first)
+        #expect(reminder.eventStart.timeIntervalSince(reminder.fireDate) == 300)
+        #expect(reminder.alertTitle == "Sync starts in 5 minutes")
+    }
+
+    @Test func describesASingleMinuteInTheSingular() {
+        #expect(ReminderPolicy.describe(leadTime: 60) == "1 minute")
+    }
+
+    @Test func alarmIDDoesNotDependOnLeadTime() throws {
+        let short = try #require(ReminderPolicy.reminders(for: [event()], now: now, leadTime: 30).first)
+        let long = try #require(ReminderPolicy.reminders(for: [event()], now: now, leadTime: 300).first)
+        #expect(short.id == long.id)
+    }
+
+    @Test func skipsEventsWhoseBuzzTimeHasPassedAtTheConfiguredLeadTime() {
+        let reminders = ReminderPolicy.reminders(for: [event(startingIn: 120)], now: now, leadTime: 300)
+        #expect(reminders.isEmpty)
     }
 
     @Test func skipsEventsWhoseBuzzTimeHasPassed() {
@@ -188,6 +209,58 @@ struct ReminderPolicyTests {
             canCancel: true,
             keeping: []
         )
+        #expect(changes.schedule.isEmpty)
+    }
+
+    @Test func replacesAlarmsLeftFromAnEarlierLeadTime() {
+        let id = UUID()
+        let wanted = reminder(id)
+        let changes = ReminderPolicy.alarmChanges(
+            desired: [wanted],
+            existing: [ExistingAlarm(id: id, isWaitingToFire: true, fireDate: wanted.fireDate.addingTimeInterval(-270))],
+            canCancel: true,
+            keeping: []
+        )
+        #expect(changes.cancel == [id])
+        #expect(changes.schedule == [wanted])
+    }
+
+    @Test func holdingCancellationsStillReplacesAlarmsLeftFromAnEarlierLeadTime() {
+        let id = UUID()
+        let wanted = reminder(id)
+        let changes = ReminderPolicy.alarmChanges(
+            desired: [wanted],
+            existing: [ExistingAlarm(id: id, isWaitingToFire: true, fireDate: wanted.fireDate.addingTimeInterval(-270))],
+            canCancel: false,
+            keeping: []
+        )
+        #expect(changes.cancel == [id])
+        #expect(changes.schedule == [wanted])
+    }
+
+    @Test func leavesAlarmsAlreadyAtTheRightTime() {
+        let id = UUID()
+        let wanted = reminder(id)
+        let changes = ReminderPolicy.alarmChanges(
+            desired: [wanted],
+            existing: [ExistingAlarm(id: id, isWaitingToFire: true, fireDate: wanted.fireDate)],
+            canCancel: true,
+            keeping: []
+        )
+        #expect(changes.cancel.isEmpty)
+        #expect(changes.schedule.isEmpty)
+    }
+
+    @Test func changingLeadTimeDoesNotStopARingingAlarm() {
+        let id = UUID()
+        let wanted = reminder(id)
+        let changes = ReminderPolicy.alarmChanges(
+            desired: [wanted],
+            existing: [ExistingAlarm(id: id, isWaitingToFire: false, fireDate: wanted.fireDate.addingTimeInterval(-270))],
+            canCancel: true,
+            keeping: []
+        )
+        #expect(changes.cancel.isEmpty)
         #expect(changes.schedule.isEmpty)
     }
 

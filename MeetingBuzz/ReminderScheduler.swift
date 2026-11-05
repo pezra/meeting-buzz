@@ -20,7 +20,9 @@ final class ReminderScheduler {
     private static let maxBackgroundWait = Duration.seconds(20)
     private static let backgroundUpdateDateKey = "lastBackgroundUpdateDate"
     private static let backgroundUpdateSourceKey = "lastBackgroundUpdateSource"
+    private static let leadTimeKey = "leadTime"
 
+    private(set) var leadTime = UserDefaults.standard.object(forKey: leadTimeKey) as? TimeInterval ?? ReminderPolicy.defaultLeadTime
     private(set) var reminders: [Reminder] = []
     private(set) var calendarAccess = EKEventStore.authorizationStatus(for: .event)
     private(set) var alarmAccess = AlarmManager.shared.authorizationState
@@ -63,6 +65,13 @@ final class ReminderScheduler {
         } catch {
             actionErrorMessage = error.localizedDescription
         }
+    }
+
+    /// Applies to future alarms and, through the refresh, to the ones already scheduled.
+    func setLeadTime(_ newValue: TimeInterval) {
+        leadTime = newValue
+        UserDefaults.standard.set(newValue, forKey: Self.leadTimeKey)
+        Task { await refresh() }
     }
 
     /// Brings scheduled alarms in line with the calendar and returns whether that worked. Calls made during a refresh
@@ -196,13 +205,15 @@ final class ReminderScheduler {
 
         let canCancel = ContinuousClock.now >= cancellationsHeldUntil
         let now = Date()
-        let desired = ReminderPolicy.reminders(for: fetchEvents(from: now), now: now)
+        let desired = ReminderPolicy.reminders(for: fetchEvents(from: now), now: now, leadTime: leadTime)
 
         var succeeded = true
         do {
             let changes = ReminderPolicy.alarmChanges(
                 desired: desired,
-                existing: try alarms.alarms.map { ExistingAlarm(id: $0.id, isWaitingToFire: $0.state == .scheduled) },
+                existing: try alarms.alarms.map {
+                    ExistingAlarm(id: $0.id, isWaitingToFire: $0.state == .scheduled, fireDate: fireDate(of: $0))
+                },
                 canCancel: canCancel,
                 keeping: [Self.testAlarmID]
             )
@@ -218,6 +229,10 @@ final class ReminderScheduler {
         }
         reminders = desired
         return succeeded
+    }
+
+    private func fireDate(of alarm: Alarm) -> Date? {
+        if case .fixed(let date) = alarm.schedule { date } else { nil }
     }
 
     private func fetchEvents(from start: Date) -> [CalendarEvent] {

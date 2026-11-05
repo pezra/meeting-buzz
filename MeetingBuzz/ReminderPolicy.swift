@@ -20,27 +20,34 @@ struct Reminder: Identifiable, Equatable {
     var id: UUID
     var title: String
     var eventStart: Date
+    var leadTime: TimeInterval
 
     var fireDate: Date {
-        eventStart.addingTimeInterval(-ReminderPolicy.leadTime)
+        eventStart.addingTimeInterval(-leadTime)
     }
 
     var alertTitle: String {
-        "\(title) starts in \(Int(ReminderPolicy.leadTime)) seconds"
+        "\(title) starts in \(ReminderPolicy.describe(leadTime: leadTime))"
     }
 }
 
 struct ExistingAlarm {
     var id: UUID
     var isWaitingToFire: Bool
+    var fireDate: Date? = nil
 }
 
 enum ReminderPolicy {
-    static let leadTime: TimeInterval = 30
+    static let defaultLeadTime: TimeInterval = 30
+    static let leadTimeOptions: [TimeInterval] = [30, 60, 120, 300, 600, 900]
     static let lookaheadDays = 14
     static let lookahead = TimeInterval(lookaheadDays) * 24 * 60 * 60
     /// AlarmKit enforces an undocumented limit, so only hold alarms for the soonest events.
     static let maxAlarms = 60
+
+    static func describe(leadTime: TimeInterval) -> String {
+        Duration.seconds(leadTime).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
+    }
 
     /// Stable across refreshes. Moving, renaming, adding or removing an event changes it, which replaces the alarm.
     static func alarmID(for events: [CalendarEvent]) -> UUID {
@@ -67,14 +74,19 @@ enum ReminderPolicy {
         return !declined && involvesAnotherPerson(event)
     }
 
-    static func reminders(for events: [CalendarEvent], now: Date) -> [Reminder] {
+    static func reminders(
+        for events: [CalendarEvent],
+        now: Date,
+        leadTime: TimeInterval = defaultLeadTime
+    ) -> [Reminder] {
         let upcoming = Dictionary(grouping: events.filter(shouldRemind), by: \.start)
             .map { start, group in
                 let ordered = group.sorted { ($0.title, $0.id) < ($1.title, $1.id) }
                 return Reminder(
                     id: alarmID(for: ordered),
                     title: combinedTitle(for: ordered),
-                    eventStart: start
+                    eventStart: start,
+                    leadTime: leadTime
                 )
             }
             .filter { $0.fireDate > now }
@@ -90,12 +102,19 @@ enum ReminderPolicy {
         canCancel: Bool,
         keeping: Set<UUID>
     ) -> (cancel: [UUID], schedule: [Reminder]) {
-        let desiredIDs = Set(desired.map(\.id))
+        let desiredByID = Dictionary(uniqueKeysWithValues: desired.map { ($0.id, $0) })
         let existingIDs = Set(existing.map(\.id))
         // Only alarms still waiting to fire: cancelling one that's ringing would stop it before it's dismissed.
-        let cancel = canCancel
-            ? existing.filter { $0.isWaitingToFire && !keeping.contains($0.id) && !desiredIDs.contains($0.id) }.map(\.id)
+        let waiting = existing.filter(\.isWaitingToFire)
+        let stale = canCancel
+            ? waiting.filter { !keeping.contains($0.id) && desiredByID[$0.id] == nil }.map(\.id)
             : []
-        return (cancel, desired.filter { !existingIDs.contains($0.id) })
+        // Left over from an earlier lead time. The event is still on the calendar, so this doesn't wait for canCancel.
+        let retimed = waiting.filter { alarm in
+            guard let current = alarm.fireDate, let wanted = desiredByID[alarm.id]?.fireDate else { return false }
+            return abs(current.timeIntervalSince(wanted)) >= 1
+        }.map(\.id)
+        let replacing = Set(retimed)
+        return (stale + retimed, desired.filter { !existingIDs.contains($0.id) || replacing.contains($0.id) })
     }
 }

@@ -8,6 +8,10 @@ An event gets a buzz if someone other than you is on its attendee list. Conferen
 
 Events that start at the same time share one alarm, titled something like "Review + 1 more starts in 30 seconds".
 
+## Lead time
+
+The **Buzz before events** setting controls how long before an event the buzz starts. Changing it also moves the alarms that are already scheduled.
+
 ## Updates
 
 MeetingBuzz updates when you open it, when the calendar changes while it is running, and whenever iOS grants it a background refresh or an overnight task. iOS decides when those last two happen, so “overnight” is more of an aspiration than a schedule.
