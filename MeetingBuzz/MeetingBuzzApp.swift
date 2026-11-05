@@ -1,10 +1,9 @@
-import EventKit
 import SwiftUI
 
 @main
 struct MeetingBuzzApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var scheduler = ReminderScheduler.shared
+    private let scheduler = ReminderScheduler.shared
 
     init() {
         ReminderScheduler.registerOvernightRefresh()
@@ -15,24 +14,18 @@ struct MeetingBuzzApp: App {
             ContentView(scheduler: scheduler)
                 .task {
                     await scheduler.requestPermissions()
-                    scheduler.requestCalendarSync()
-                    await scheduler.refresh()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
-                    Task { await scheduler.refresh() }
+                    await scheduler.syncAndRefresh()
                 }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active:
-                scheduler.requestCalendarSync()
-                Task { await scheduler.refresh() }
-            case .background: scheduler.scheduleBackgroundRefresh()
+            case .active: Task { await scheduler.syncAndRefresh() }
+            case .background: Task { await scheduler.scheduleBackgroundRefresh() }
             default: break
             }
         }
         .backgroundTask(.appRefresh(ReminderScheduler.refreshTaskID)) {
-            await ReminderScheduler.shared.backgroundRefresh(source: "Background refresh")
+            _ = await scheduler.backgroundRefresh(source: "Background refresh")
         }
     }
 }

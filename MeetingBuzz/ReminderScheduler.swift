@@ -13,7 +13,12 @@ final class ReminderScheduler {
     static let refreshTaskID = "org.barelyenough.MeetingBuzz.refresh"
     static let overnightTaskID = "org.barelyenough.MeetingBuzz.overnight"
     private static let testAlarmID = UUID(uuidString: "5D1A7C52-0B7E-4C39-9E55-3F0A6B2C1D10")!
+    /// iOS doesn't report when a sync ends, so it's assumed over if nothing changes for this long after requesting one...
     private static let syncWait = Duration.seconds(10)
+    /// ...or for this long after the calendar last changed.
+    private static let changeSettleTime = Duration.seconds(5)
+    /// Background runs get about 30 seconds, so they stop waiting for a busy sync after this long.
+    private static let maxBackgroundWait = Duration.seconds(20)
     private static let backgroundUpdateDateKey = "lastBackgroundUpdateDate"
     private static let backgroundUpdateSourceKey = "lastBackgroundUpdateSource"
 
@@ -24,10 +29,25 @@ final class ReminderScheduler {
     private(set) var lastBackgroundUpdate = UserDefaults.standard.object(forKey: backgroundUpdateDateKey) as? Date
     private(set) var lastBackgroundSource = UserDefaults.standard.string(forKey: backgroundUpdateSourceKey)
 
+    private var hasRequiredAccess: Bool {
+        calendarAccess == .fullAccess && alarmAccess == .authorized
+    }
+
     private let store = EKEventStore()
     private let alarms = AlarmManager.shared
-    private var isRefreshing = false
+    private var refreshTask: Task<Bool, Never>?
     private var needsAnotherRefresh = false
+    private var cancellationsHeldUntil = ContinuousClock.now
+    private var settleTask: Task<Void, Never>?
+
+    private init() {
+        // Registered here rather than in the UI, because a background launch may never create the UI.
+        NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.calendarDidChange()
+            }
+        }
+    }
 
     func requestPermissions() async {
         do {
@@ -42,41 +62,80 @@ final class ReminderScheduler {
         }
     }
 
-    /// Brings scheduled alarms in line with the calendar. Calls made during a refresh are coalesced into one more pass.
-    func refresh() async {
-        guard !isRefreshing else {
+    /// Brings scheduled alarms in line with the calendar and returns whether that worked. Calls made during a refresh
+    /// are coalesced into one more pass, and wait for it to finish.
+    @discardableResult
+    func refresh() async -> Bool {
+        if let refreshTask {
             needsAnotherRefresh = true
-            return
+            return await refreshTask.value
         }
-        isRefreshing = true
-        defer { isRefreshing = false }
-        repeat {
-            needsAnotherRefresh = false
-            await syncAlarms()
-        } while needsAnotherRefresh
+        let task = Task {
+            defer { refreshTask = nil }
+            var succeeded: Bool
+            repeat {
+                needsAnotherRefresh = false
+                succeeded = await syncAlarms()
+            } while needsAnotherRefresh
+            return succeeded
+        }
+        refreshTask = task
+        return await task.value
     }
 
-    /// Asks iOS to pull from calendar accounts if it thinks they're out of date. iOS doesn't report the outcome,
-    /// so this can't be awaited. Don't call this when handling EKEventStoreChanged, since a sync posts that notification.
-    func requestCalendarSync() {
+    /// Requests a sync, so don't call this when the calendar changes, since a sync causes that. Use refresh() there.
+    func syncAndRefresh() async {
+        requestCalendarSync()
+        await refresh()
+    }
+
+    /// Asks iOS to pull from calendar accounts if it thinks they're out of date.
+    private func requestCalendarSync() {
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return }
         store.refreshSourcesIfNecessary()
+        holdCancellations(for: Self.syncWait)
     }
 
-    /// Refreshes on behalf of something other than the user opening the app, and records that it worked.
-    func backgroundRefresh(source: String) async {
-        scheduleBackgroundRefresh()
+    private func calendarDidChange() {
+        holdCancellations(for: Self.changeSettleTime)
+        Task { await refresh() }
+    }
+
+    /// The calendar can look incomplete during a sync, and an event missing from it would lose its alarm. So until the
+    /// calendar settles, refreshes only add alarms, and one more refresh after that does any cancelling.
+    private func holdCancellations(for duration: Duration) {
+        let until = ContinuousClock.now + duration
+        cancellationsHeldUntil = until
+        settleTask?.cancel()
+        settleTask = Task {
+            try? await Task.sleep(until: until)
+            guard !Task.isCancelled else { return }
+            await refresh()
+        }
+    }
+
+    private func waitForCalendarToSettle() async {
+        let deadline = ContinuousClock.now + Self.maxBackgroundWait
+        while ContinuousClock.now < min(cancellationsHeldUntil, deadline), !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    /// Refreshes on behalf of something other than the user opening the app. Records and returns whether it worked.
+    func backgroundRefresh(source: String) async -> Bool {
+        await scheduleBackgroundRefresh()
+        requestCalendarSync()
         // Apply what's already on the phone first, in case iOS suspends the app during the wait.
         await refresh()
-        requestCalendarSync()
-        try? await Task.sleep(for: Self.syncWait)
-        await refresh()
-        guard errorMessage == nil, calendarAccess == .fullAccess, alarmAccess == .authorized else { return }
+        guard hasRequiredAccess else { return false }
+        await waitForCalendarToSettle()
+        guard !Task.isCancelled, await refresh() else { return false }
         let now = Date()
         lastBackgroundUpdate = now
         lastBackgroundSource = source
         UserDefaults.standard.set(now, forKey: Self.backgroundUpdateDateKey)
         UserDefaults.standard.set(source, forKey: Self.backgroundUpdateSourceKey)
+        return true
     }
 
     /// SwiftUI's backgroundTask modifier has no processing task, so this one is registered directly. Must run before launch finishes.
@@ -90,8 +149,8 @@ final class ReminderScheduler {
 
     private func runOvernightRefresh(_ task: BGTask) {
         let work = Task {
-            await backgroundRefresh(source: "Overnight")
-            task.setTaskCompleted(success: !Task.isCancelled)
+            let succeeded = await backgroundRefresh(source: "Overnight")
+            task.setTaskCompleted(success: succeeded)
         }
         task.expirationHandler = { work.cancel() }
     }
@@ -105,25 +164,34 @@ final class ReminderScheduler {
         }
     }
 
-    func scheduleBackgroundRefresh() {
-        let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskID)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
-        try? BGTaskScheduler.shared.submit(request)
+    /// Only submits requests that aren't already pending, because resubmitting one pushes its earliest start back.
+    func scheduleBackgroundRefresh() async {
+        let pending = Set(await BGTaskScheduler.shared.pendingTaskRequests().map(\.identifier))
 
-        let overnight = BGProcessingTaskRequest(identifier: Self.overnightTaskID)
-        overnight.earliestBeginDate = Date(timeIntervalSinceNow: 4 * 60 * 60)
-        try? BGTaskScheduler.shared.submit(overnight)
+        if !pending.contains(Self.refreshTaskID) {
+            let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskID)
+            request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+            try? BGTaskScheduler.shared.submit(request)
+        }
+
+        if !pending.contains(Self.overnightTaskID) {
+            let overnight = BGProcessingTaskRequest(identifier: Self.overnightTaskID)
+            overnight.earliestBeginDate = Date(timeIntervalSinceNow: 4 * 60 * 60)
+            overnight.requiresNetworkConnectivity = true
+            try? BGTaskScheduler.shared.submit(overnight)
+        }
     }
 
-    private func syncAlarms() async {
+    private func syncAlarms() async -> Bool {
         errorMessage = nil
         calendarAccess = EKEventStore.authorizationStatus(for: .event)
         alarmAccess = alarms.authorizationState
-        guard calendarAccess == .fullAccess, alarmAccess == .authorized else {
+        guard hasRequiredAccess else {
             reminders = []
-            return
+            return false
         }
 
+        let canCancel = ContinuousClock.now >= cancellationsHeldUntil
         let now = Date()
         let desired = ReminderPolicy.reminders(for: fetchEvents(from: now), now: now)
 
@@ -131,7 +199,7 @@ final class ReminderScheduler {
             let existing = try alarms.alarms
             let desiredIDs = Set(desired.map(\.id))
             // Only alarms still waiting to fire: cancelling one that's ringing would stop it before it's dismissed.
-            for alarm in existing where alarm.state == .scheduled && alarm.id != Self.testAlarmID && !desiredIDs.contains(alarm.id) {
+            for alarm in existing where canCancel && alarm.state == .scheduled && alarm.id != Self.testAlarmID && !desiredIDs.contains(alarm.id) {
                 try alarms.cancel(id: alarm.id)
             }
 
@@ -143,6 +211,7 @@ final class ReminderScheduler {
             errorMessage = error.localizedDescription
         }
         reminders = desired
+        return errorMessage == nil
     }
 
     private func fetchEvents(from start: Date) -> [CalendarEvent] {

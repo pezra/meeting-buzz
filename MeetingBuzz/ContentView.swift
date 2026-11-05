@@ -51,17 +51,16 @@ struct ContentView: View {
                     Text("Upcoming buzzes")
                 } footer: {
                     if let date = scheduler.lastBackgroundUpdate, let source = scheduler.lastBackgroundSource {
-                        Text("Last background update: \(date, format: .dateTime.weekday().hour().minute()) (\(source))")
+                        TimelineView(.everyMinute) { _ in
+                            Text("Last background update: \(date.formatted(.relative(presentation: .numeric))) (\(source))")
+                        }
                     } else {
                         Text("Last background update: none yet")
                     }
                 }
             }
             .navigationTitle("MeetingBuzz")
-            .refreshable {
-                scheduler.requestCalendarSync()
-                await scheduler.refresh()
-            }
+            .refreshable { await scheduler.syncAndRefresh() }
         }
     }
 

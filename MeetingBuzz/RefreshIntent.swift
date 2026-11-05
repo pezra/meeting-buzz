@@ -7,8 +7,16 @@ struct RefreshIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        await ReminderScheduler.shared.backgroundRefresh(source: "Shortcut")
+        guard await ReminderScheduler.shared.backgroundRefresh(source: "Shortcut") else {
+            throw RefreshFailed()
+        }
         return .result()
+    }
+}
+
+struct RefreshFailed: LocalizedError {
+    var errorDescription: String? {
+        "MeetingBuzz couldn't update your buzzes. Open the app to try again."
     }
 }
 
