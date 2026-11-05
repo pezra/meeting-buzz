@@ -7,8 +7,12 @@
 		<string>org.barelyenough.MeetingBuzz.refresh</string>
 		<string>org.barelyenough.MeetingBuzz.overnight</string>
 	</array>
+	<key>CFBundleDisplayName</key>
+	<string>MeetingBuzz</string>
 	<key>NSAlarmKitUsageDescription</key>
 	<string>MeetingBuzz sets an alarm that vibrates 30 seconds before events with other people, until you dismiss it.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>MeetingBuzz reads your calendar to find events with other people, so it can vibrate 30 seconds before they start.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

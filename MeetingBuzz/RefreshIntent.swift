@@ -3,7 +3,7 @@ import AppIntents
 struct RefreshIntent: AppIntent {
     static let title: LocalizedStringResource = "Refresh MeetingBuzz"
     static let description = IntentDescription("Updates your buzzes from your calendar without opening the app.")
-    static let openAppWhenRun = false
+    static let supportedModes: IntentModes = .background
 
     @MainActor
     func perform() async throws -> some IntentResult {

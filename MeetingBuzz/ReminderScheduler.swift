@@ -1,7 +1,6 @@
 import AlarmKit
 import BackgroundTasks
 import EventKit
-import Observation
 import SwiftUI
 
 struct BuzzMetadata: AlarmMetadata {}
@@ -11,7 +10,7 @@ struct BuzzMetadata: AlarmMetadata {}
 final class ReminderScheduler {
     static let shared = ReminderScheduler()
     static let refreshTaskID = "org.barelyenough.MeetingBuzz.refresh"
-    static let overnightTaskID = "org.barelyenough.MeetingBuzz.overnight"
+    private static let overnightTaskID = "org.barelyenough.MeetingBuzz.overnight"
     private static let testAlarmID = UUID(uuidString: "5D1A7C52-0B7E-4C39-9E55-3F0A6B2C1D10")!
     /// iOS doesn't report when a sync ends, so it's assumed over if nothing changes for this long after requesting one...
     private static let syncWait = Duration.seconds(10)
@@ -65,7 +64,7 @@ final class ReminderScheduler {
     /// Brings scheduled alarms in line with the calendar and returns whether that worked. Calls made during a refresh
     /// are coalesced into one more pass, and wait for it to finish.
     @discardableResult
-    func refresh() async -> Bool {
+    private func refresh() async -> Bool {
         if let refreshTask {
             needsAnotherRefresh = true
             return await refreshTask.value
@@ -83,17 +82,14 @@ final class ReminderScheduler {
         return await task.value
     }
 
-    /// Requests a sync, so don't call this when the calendar changes, since a sync causes that. Use refresh() there.
+    /// Asks iOS to pull from calendar accounts if it thinks they're out of date, then refreshes. Don't call this when
+    /// the calendar changes, since a sync causes that. Use refresh() there.
     func syncAndRefresh() async {
-        requestCalendarSync()
+        if EKEventStore.authorizationStatus(for: .event) == .fullAccess {
+            store.refreshSourcesIfNecessary()
+            holdCancellations(for: Self.syncWait)
+        }
         await refresh()
-    }
-
-    /// Asks iOS to pull from calendar accounts if it thinks they're out of date.
-    private func requestCalendarSync() {
-        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return }
-        store.refreshSourcesIfNecessary()
-        holdCancellations(for: Self.syncWait)
     }
 
     private func calendarDidChange() {
@@ -116,17 +112,19 @@ final class ReminderScheduler {
 
     private func waitForCalendarToSettle() async {
         let deadline = ContinuousClock.now + Self.maxBackgroundWait
-        while ContinuousClock.now < min(cancellationsHeldUntil, deadline), !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(1))
+        // Checks again after waking, because a calendar change can move the hold.
+        while !Task.isCancelled {
+            let wakeTime = min(cancellationsHeldUntil, deadline)
+            guard ContinuousClock.now < wakeTime else { return }
+            try? await Task.sleep(until: wakeTime)
         }
     }
 
     /// Refreshes on behalf of something other than the user opening the app. Records and returns whether it worked.
     func backgroundRefresh(source: String) async -> Bool {
         await scheduleBackgroundRefresh()
-        requestCalendarSync()
         // Apply what's already on the phone first, in case iOS suspends the app during the wait.
-        await refresh()
+        await syncAndRefresh()
         guard hasRequiredAccess else { return false }
         await waitForCalendarToSettle()
         guard !Task.isCancelled, await refresh() else { return false }
@@ -195,23 +193,26 @@ final class ReminderScheduler {
         let now = Date()
         let desired = ReminderPolicy.reminders(for: fetchEvents(from: now), now: now)
 
+        var succeeded = true
         do {
-            let existing = try alarms.alarms
-            let desiredIDs = Set(desired.map(\.id))
-            // Only alarms still waiting to fire: cancelling one that's ringing would stop it before it's dismissed.
-            for alarm in existing where canCancel && alarm.state == .scheduled && alarm.id != Self.testAlarmID && !desiredIDs.contains(alarm.id) {
-                try alarms.cancel(id: alarm.id)
+            let changes = ReminderPolicy.alarmChanges(
+                desired: desired,
+                existing: try alarms.alarms.map { ExistingAlarm(id: $0.id, isWaitingToFire: $0.state == .scheduled) },
+                canCancel: canCancel,
+                keeping: [Self.testAlarmID]
+            )
+            for id in changes.cancel {
+                try alarms.cancel(id: id)
             }
-
-            let existingIDs = Set(existing.map(\.id))
-            for reminder in desired where !existingIDs.contains(reminder.id) {
-                try await schedule(id: reminder.id, title: "\(reminder.title) starts in 30 seconds", at: reminder.fireDate)
+            for reminder in changes.schedule {
+                try await schedule(id: reminder.id, title: reminder.alertTitle, at: reminder.fireDate)
             }
         } catch {
             errorMessage = error.localizedDescription
+            succeeded = false
         }
         reminders = desired
-        return errorMessage == nil
+        return succeeded
     }
 
     private func fetchEvents(from start: Date) -> [CalendarEvent] {
