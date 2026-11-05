@@ -5,12 +5,14 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>org.barelyenough.MeetingBuzz.refresh</string>
+		<string>org.barelyenough.MeetingBuzz.overnight</string>
 	</array>
 	<key>NSAlarmKitUsageDescription</key>
 	<string>MeetingBuzz sets an alarm that vibrates 30 seconds before events with other people, until you dismiss it.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 </dict>
 </plist>

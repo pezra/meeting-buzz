@@ -34,7 +34,7 @@ struct ContentView: View {
                     }
                 }
 
-                Section("Upcoming buzzes") {
+                Section {
                     if scheduler.reminders.isEmpty {
                         Text("No events with other people in the next 14 days.")
                             .foregroundStyle(.secondary)
@@ -47,10 +47,21 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                } header: {
+                    Text("Upcoming buzzes")
+                } footer: {
+                    if let date = scheduler.lastBackgroundUpdate, let source = scheduler.lastBackgroundSource {
+                        Text("Last background update: \(date, format: .dateTime.weekday().hour().minute()) (\(source))")
+                    } else {
+                        Text("Last background update: none yet")
+                    }
                 }
             }
             .navigationTitle("MeetingBuzz")
-            .refreshable { await scheduler.refresh() }
+            .refreshable {
+                scheduler.requestCalendarSync()
+                await scheduler.refresh()
+            }
         }
     }
 
