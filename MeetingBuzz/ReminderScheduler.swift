@@ -24,7 +24,10 @@ final class ReminderScheduler {
     private(set) var reminders: [Reminder] = []
     private(set) var calendarAccess = EKEventStore.authorizationStatus(for: .event)
     private(set) var alarmAccess = AlarmManager.shared.authorizationState
+    /// Why the last update failed. Every update replaces it.
     private(set) var errorMessage: String?
+    /// Why a permission request or test buzz failed. Kept separate so the next update doesn't wipe it before it's seen.
+    private(set) var actionErrorMessage: String?
     private(set) var lastBackgroundUpdate = UserDefaults.standard.object(forKey: backgroundUpdateDateKey) as? Date
     private(set) var lastBackgroundSource = UserDefaults.standard.string(forKey: backgroundUpdateSourceKey)
 
@@ -49,6 +52,7 @@ final class ReminderScheduler {
     }
 
     func requestPermissions() async {
+        actionErrorMessage = nil
         do {
             if EKEventStore.authorizationStatus(for: .event) == .notDetermined {
                 _ = try await store.requestFullAccessToEvents()
@@ -57,7 +61,7 @@ final class ReminderScheduler {
                 _ = try await AlarmManager.shared.requestAuthorization()
             }
         } catch {
-            errorMessage = error.localizedDescription
+            actionErrorMessage = error.localizedDescription
         }
     }
 
@@ -154,11 +158,12 @@ final class ReminderScheduler {
     }
 
     func scheduleTestBuzz() async {
+        actionErrorMessage = nil
         try? alarms.cancel(id: Self.testAlarmID)
         do {
             try await schedule(id: Self.testAlarmID, title: "MeetingBuzz test", at: Date(timeIntervalSinceNow: 10))
         } catch {
-            errorMessage = error.localizedDescription
+            actionErrorMessage = error.localizedDescription
         }
     }
 

@@ -75,6 +75,9 @@ struct ContentView: View {
         if let error = scheduler.errorMessage {
             result.append(error)
         }
+        if let error = scheduler.actionErrorMessage, error != scheduler.errorMessage {
+            result.append(error)
+        }
         return result
     }
 }
